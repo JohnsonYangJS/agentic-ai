@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import json as _json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -146,6 +150,94 @@ class BrowserSession:
         self.page.on("requestfailed", on_request_failed)
         self.page.on("response", on_response)
         self.page.on("requestfinished", on_request_finished)
+
+        async def _qr_capture_handler(resp: Any) -> None:
+            """Capture the QR image bytes from the first successful response of
+            XHS's qr-code endpoint. We do this because XHS's anti-bot blocks the
+            QR data from binding to the <img> element when it detects
+            Playwright automation, so a full-page screenshot of the rendered
+            page comes out blank. Intercepting the underlying API response
+            gives us the real QR image regardless of UI rendering.
+            """
+            try:
+                url = str(resp.url)
+                if "customer.xiaohongshu.com/api/cas/customer/web/qr-code" not in url:
+                    return
+                if getattr(self.page, "_qr_captured", False):
+                    return
+
+                content_type = resp.headers.get("content-type", "") or ""
+                body = await resp.body()
+
+                qr_bytes: bytes | None = None
+                qr_ext = "png"
+
+                if "application/json" in content_type:
+                    try:
+                        data = _json.loads(body.decode("utf-8", errors="ignore"))
+                    except Exception as exc:  # noqa: BLE001
+                        if self.audit:
+                            self.audit.event("qr_xhr_parse_error", error=str(exc))
+                        return
+
+                    def _find_qr(obj: Any) -> str | None:
+                        if isinstance(obj, dict):
+                            for key, value in obj.items():
+                                lowered = key.lower()
+                                if lowered in {
+                                    "qr_code",
+                                    "qrcode",
+                                    "qr_code_url",
+                                    "qrcode_url",
+                                    "qr_code_img",
+                                    "qrcode_img",
+                                    "image",
+                                    "img",
+                                    "code",
+                                }:
+                                    if isinstance(value, str) and (
+                                        value.startswith("data:image")
+                                        or value.startswith("http")
+                                    ):
+                                        return value
+                                nested = _find_qr(value)
+                                if nested:
+                                    return nested
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                nested = _find_qr(item)
+                                if nested:
+                                    return nested
+                        return None
+
+                    qr_data = _find_qr(data)
+                    if qr_data:
+                        if qr_data.startswith("data:image/"):
+                            match = re.match(r"data:image/(\w+);base64,(.+)", qr_data)
+                            if match:
+                                qr_ext = match.group(1)
+                                qr_bytes = base64.b64decode(match.group(2))
+                        elif qr_data.startswith("http"):
+                            # Stash URL for a later fetch if needed.
+                            self.page._qr_image_url = qr_data
+                elif content_type.startswith("image/"):
+                    qr_ext = content_type.split("/")[-1].split(";")[0]
+                    qr_bytes = body
+
+                if qr_bytes:
+                    self.page._qr_image_bytes = qr_bytes
+                    self.page._qr_image_ext = qr_ext
+                    self.page._qr_captured = True
+                    if self.audit:
+                        self.audit.event(
+                            "qr_image_captured_from_xhr",
+                            ext=qr_ext,
+                            size=len(qr_bytes),
+                        )
+            except Exception:
+                pass
+
+        self.page.on("response", lambda r: asyncio.create_task(_qr_capture_handler(r)))
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         if self.context:

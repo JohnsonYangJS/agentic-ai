@@ -4,7 +4,6 @@ set -euo pipefail
 PROJECT_ROOT="${PROJECT_ROOT:-${HOME}/projects/xhs-auto-publisher}"
 PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
 CONTENT_PATH="${1:-${PROJECT_ROOT}/examples/openclaw_business_content.json}"
-MODE="${MODE:-publish}"
 LOGIN_TIMEOUT="${LOGIN_TIMEOUT:-300}"
 DISPLAY_NUM="${DISPLAY_NUM:-99}"
 
@@ -17,7 +16,6 @@ fi
 
 echo "[run] project root: ${PROJECT_ROOT}"
 echo "[run] content path: ${CONTENT_PATH}"
-echo "[run] mode: ${MODE}"
 echo "[run] login timeout: ${LOGIN_TIMEOUT}"
 
 if [ ! -x "${PYTHON_BIN}" ]; then
@@ -39,5 +37,4 @@ exec xvfb-run \
   "${PYTHON_BIN}" \
   "${PROJECT_ROOT}/scripts/publish_xhs.py" \
   --content "${CONTENT_PATH}" \
-  --mode "${MODE}" \
   --login-timeout "${LOGIN_TIMEOUT}"

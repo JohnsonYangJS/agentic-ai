@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -106,13 +107,54 @@ class XhsPublisher:
             except Exception:
                 continue
 
-        await self.page.wait_for_timeout(1200)
-        qr_path = await self.audit.screenshot(self.page, "login_qr")
+        # Wait for QR image bytes captured from the qr-code XHR (browser_session
+        # attaches an async response listener). If XHS's anti-bot blocks the QR
+        # from binding to the <img> element, the page screenshot will be blank
+        # but the API response may still carry the real image — prefer that.
+        qr_captured = False
+        try:
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + 8.0
+            while loop.time() < deadline:
+                if getattr(self.page, "_qr_image_bytes", None):
+                    qr_captured = True
+                    break
+                await asyncio.sleep(0.3)
+        except Exception as exc:  # noqa: BLE001
+            self.audit.event("qr_capture_wait_error", error=str(exc))
+
+        qr_path: Path
+        if qr_captured:
+            qr_bytes = self.page._qr_image_bytes
+            qr_ext = getattr(self.page, "_qr_image_ext", "png")
+            qr_path = self.audit.screenshots_dir / (
+                f"login_qr.{qr_ext}" if qr_ext != "png" else "login_qr.png"
+            )
+            qr_path.write_bytes(qr_bytes)
+            self.audit.event(
+                "login_qr_from_xhr", path=str(qr_path), size=len(qr_bytes)
+            )
+        else:
+            # Fallback: wait for <img> to actually have a data URL, then snap.
+            try:
+                await self.page.wait_for_function(
+                    "() => { const img = document.querySelector('img[src^=\"data:image/png\"]'); return img && img.src && img.src.length > 100; }",
+                    timeout=5000,
+                )
+            except Exception:
+                pass
+            await self.page.wait_for_timeout(800)
+            qr_path = await self.audit.screenshot(self.page, "login_qr")
+            self.audit.event("login_qr_from_screenshot", path=str(qr_path))
+
         await self.audit.dom_snapshot(self.page, "login_qr")
         if self.notifier.qr_handoff_enabled():
             self.notifier.notify_qr(qr_path, run_dir=self.audit.run_dir)
         print(f"LOGIN_QR_SCREENSHOT={qr_path}", flush=True)
-        self.audit.event("login_qr_screenshot_ready", path=str(qr_path), clicked=clicked)
+        self.audit.event(
+            "login_qr_screenshot_ready", path=str(qr_path), clicked=clicked,
+            source="xhr" if qr_captured else "screenshot",
+        )
 
     async def open_publish_page(self) -> None:
         publish_url = str(self.app_config["publish_url"])

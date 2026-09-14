@@ -63,7 +63,7 @@ def load_content(path: Path, *, mode_override: str | None = None) -> XhsContent:
     body = str(payload.get("body") or "").strip()
     topics = payload.get("topics") or []
     images = payload.get("images") or []
-    mode = str(mode_override or payload.get("mode") or "publish").strip().lower()
+    mode = str(mode_override or payload.get("mode") or "draft").strip().lower()
 
     if not title:
         raise ContentValidationError("title is required")
