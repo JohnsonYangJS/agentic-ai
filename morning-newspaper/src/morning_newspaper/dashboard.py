@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from html import escape
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -29,7 +30,12 @@ def _to_beijing_time(iso_str: str) -> str:
 def write_static_dashboard(runtime_dir: Path, output_path: Path) -> Path:
     data = build_dashboard_payload(runtime_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(_render_html(data), encoding="utf-8")
+    # 原子写：先写同目录临时文件，再 os.replace 覆盖。
+    # 8510 静态服务正在 serving 这个文件，直接 write_text 覆盖会让访问者
+    # 在替换瞬间拿到半截页面。os.replace 在同一文件系统上是原子操作。
+    tmp_path = output_path.with_name(output_path.name + ".tmp")
+    tmp_path.write_text(_render_html(data), encoding="utf-8")
+    os.replace(tmp_path, output_path)
     return output_path
 
 
