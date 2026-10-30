@@ -7,6 +7,11 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = PROJECT_ROOT / 'runtime'
 
+# 采集报告里一个来源可能占多行（计划行 + 结果行）。只有真正失败的才算失败：
+# tavily_search 的计划行状态是 plan_executed（计划已执行），其结果行才是 ok，
+# 早前把 plan_executed 当失败会把「Tavily 实际采到十几条」误报成采集失败。
+SUCCESS_SOURCE_STATUSES = {'ok', 'plan_executed', 'executed', 'success', 'cached'}
+
 
 def _load(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -25,7 +30,11 @@ def _count(name: str) -> int:
 def main() -> None:
     collect = _load(RUNTIME / 'collect_report.json')
     sources = collect.get('sources', []) if isinstance(collect.get('sources'), list) else []
-    failed_sources = [row for row in sources if isinstance(row, dict) and str(row.get('status', '')).strip() != 'ok']
+    failed_sources = [
+        row for row in sources
+        if isinstance(row, dict)
+        and str(row.get('status', '')).strip().lower() not in SUCCESS_SOURCE_STATUSES
+    ]
 
     shortlist = _load(RUNTIME / 'shortlist.json')
     shortlist_items = shortlist.get('items', []) if isinstance(shortlist.get('items'), list) else []

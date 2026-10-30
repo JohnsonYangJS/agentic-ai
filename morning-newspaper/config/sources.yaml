@@ -97,3 +97,7 @@ tavily_search:
       name: AI 创业融资与产品发布
       query: AI startup funding product launch acquisition enterprise software
       domains: [reuters.com, bloomberg.com, cnbc.com, techcrunch.com, theverge.com]
+
+# 短筛阶段的时效硬过滤：超过该天数的条目不进候选池（早报是「今天」的日报）
+title_shortlist:
+  max_age_days: 7
