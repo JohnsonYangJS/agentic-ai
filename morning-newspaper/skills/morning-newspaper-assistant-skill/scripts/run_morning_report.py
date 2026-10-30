@@ -2,27 +2,35 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import time
 from typing import Any, Dict
+
+
+DEFAULT_PROJECT_ROOT = "~/projects/agentic-ai/morning-newspaper"
+SYSTEMD_UNIT = "morning-newspaper-dashboard.service"
+DASHBOARD_URL = "http://127.0.0.1:8510/dashboard.html"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Morning Newspaper Assistant pipeline.")
-    parser.add_argument("--project-root", required=True)
+    parser.add_argument("--project-root", default="", help="项目根目录；缺省时读 MORNING_NEWSPAPER_ROOT 再回落默认路径")
     parser.add_argument("--python", default=sys.executable)
-    parser.add_argument("--skip-tavily", action="store_true", default=True)
+    parser.add_argument("--skip-tavily", action="store_true", default=False, help="跳过 Tavily 检索源")
     parser.add_argument("--no-dashboard", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    root = Path(args.project_root).resolve()
+    root = _resolve_project_root(args.project_root)
     runtime = root / "runtime"
 
-    _run(args.python, root / "scripts" / "collect_raw.py", root, extra=["--skip-tavily"])
+    _run(args.python, root / "scripts" / "collect_raw.py", root, extra=["--skip-tavily"] if args.skip_tavily else [])
     _run(args.python, root / "scripts" / "enrich_content.py", root)
     _run(args.python, root / "scripts" / "prepare_title_shortlist.py", root)
 
@@ -129,7 +137,36 @@ def _run(python: str, script: Path, workdir: Path, *, extra: list[str] | None = 
         raise RuntimeError(f"command failed: {' '.join(cmd)}")
 
 
+def _resolve_project_root(explicit: str) -> Path:
+    """定位项目根目录。
+
+    优先级：--project-root 参数 > MORNING_NEWSPAPER_ROOT 环境变量 > 默认路径。
+    环境变量里的 ~ 必须自行展开——OpenClaw 加载 ~/.openclaw/.env 时是
+    process.env[key] = value 直接赋值，不会做 tilde 展开。
+    """
+    candidates: list[str] = []
+    if explicit:
+        candidates.append(explicit)
+    env_root = (os.environ.get("MORNING_NEWSPAPER_ROOT") or "").strip()
+    if env_root:
+        candidates.append(env_root)
+    candidates.append(DEFAULT_PROJECT_ROOT)
+
+    for raw in candidates:
+        expanded = Path(raw).expanduser()
+        if (expanded / "scripts" / "collect_raw.py").exists():
+            return expanded.resolve()
+
+    raise SystemExit(
+        "无法定位 morning-newspaper 项目根目录。已尝试: "
+        + ", ".join(candidates)
+        + "。请设置 MORNING_NEWSPAPER_ROOT 或用 --project-root 指定。"
+    )
+
+
 def _maybe_launch_dashboard(root: Path) -> Dict[str, Any]:
+    if os.name != "nt":
+        return _maybe_launch_dashboard_systemd()
     cmd_path = root / "run_dashboard.cmd"
     if not cmd_path.exists():
         return {"status": "missing", "message": "run_dashboard.cmd 不存在。", "url": ""}
@@ -151,6 +188,22 @@ def _maybe_launch_dashboard(root: Path) -> Dict[str, Any]:
         "message": completed.stderr.strip() or completed.stdout.strip() or "动态看板启动失败。",
         "url": "",
     }
+
+
+def _maybe_launch_dashboard_systemd() -> Dict[str, Any]:
+    """非 Windows：静态页由 systemd 托管（morning-newspaper-dashboard.service）。"""
+    if shutil.which("systemctl") is None:
+        return {"status": "missing", "message": "systemctl 不可用。", "url": ""}
+    if subprocess.run(["systemctl", "cat", SYSTEMD_UNIT], capture_output=True).returncode != 0:
+        return {"status": "missing", "message": f"{SYSTEMD_UNIT} 未安装。", "url": ""}
+    active = subprocess.run(["systemctl", "is-active", "--quiet", SYSTEMD_UNIT]).returncode == 0
+    if not active:
+        subprocess.run(["systemctl", "start", SYSTEMD_UNIT], capture_output=True, check=False)
+        time.sleep(1)
+        active = subprocess.run(["systemctl", "is-active", "--quiet", SYSTEMD_UNIT]).returncode == 0
+    if not active:
+        return {"status": "error", "message": f"{SYSTEMD_UNIT} 启动失败。", "url": ""}
+    return {"status": "ok", "message": f"{SYSTEMD_UNIT} 运行中。", "url": DASHBOARD_URL}
 
 
 def _json_count(path: Path) -> int:

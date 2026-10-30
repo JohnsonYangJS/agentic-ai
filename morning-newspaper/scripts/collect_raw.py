@@ -28,8 +28,13 @@ def main() -> None:
     load_env_file(PROJECT_ROOT / ".env")
     config_path = Path(args.config)
     config = load_yaml(config_path)
-    if args.skip_tavily and isinstance(config.get("openclaw_tavily"), dict):
-        config["openclaw_tavily"]["enabled"] = False
+    # --skip-tavily 必须同时作用于两个可能的配置键：
+    # orchestrator 取的是 config.get("tavily_search", {}) or config.get("openclaw_tavily", {})，
+    # 只关 openclaw_tavily 在实际配置用 tavily_search 时完全无效（开关形同虚设）。
+    if args.skip_tavily:
+        for key in ("tavily_search", "openclaw_tavily"):
+            if isinstance(config.get(key), dict):
+                config[key]["enabled"] = False
     runtime_dir = PROJECT_ROOT / str(config.get("runtime", {}).get("output_dir", "runtime"))
 
     if args.dry_run:
