@@ -14,13 +14,15 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
-from .common import compact_text, normalize_iso, positive_int
+from .common import compact_text, normalize_iso, positive_int, strip_html
+from .mailbox_oauth import access_token_from_env, build_xoauth2_payload
 from .models import make_item_id, utc_now_iso
 
 
 def collect_mailbox(source: Dict[str, Any], *, runtime_dir: Path) -> Dict[str, Any]:
     username = _source_secret(source, "user_env", "IMAP_USER", "MAIL_USER")
     password = _source_secret(source, "pass_env", "IMAP_PASS", "MAIL_PASSWORD")
+    access_token = access_token_from_env() or ""
     source_id = compact_text(source.get("id")) or "executive_mailbox"
     source_name = compact_text(source.get("source_name") or source.get("name")) or "邮箱提醒"
     max_items = positive_int(source.get("max_items"), 10)
@@ -30,7 +32,7 @@ def collect_mailbox(source: Dict[str, Any], *, runtime_dir: Path) -> Dict[str, A
     source = dict(source)
     source["_mail_queue_exists"] = queue_path.exists()
 
-    if not username or not password:
+    if not access_token and (not username or not password):
         saved_queue = _save_queue(queue_path, queue)
         mailbox_payload = _mailbox_payload(source_name, [])
         return {
@@ -43,7 +45,9 @@ def collect_mailbox(source: Dict[str, Any], *, runtime_dir: Path) -> Dict[str, A
             "alert_count": 0,
         }
 
-    alerts, events, fetch_status, fetch_error = _fetch_mail_data(source, username=username, password=password)
+    alerts, events, fetch_status, fetch_error = _fetch_mail_data(
+        source, username=username, password=password, access_token=access_token
+    )
     queue = _merge_queue(queue, events)
     due_alerts, queue = _due_alerts_from_queue(source, queue, source_name=source_name)
     queue_file = _save_queue(queue_path, queue)
@@ -66,14 +70,21 @@ def _fetch_mail_data(
     *,
     username: str,
     password: str,
+    access_token: str = "",
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], str, str]:
     imap_error = ""
     try:
-        alerts, events = _fetch_imap(source, username=username, password=password)
+        alerts, events = _fetch_imap(
+            source, username=username, password=password, access_token=access_token
+        )
         if alerts or events or not bool(source.get("pop3_fallback_enabled", False)):
             return alerts, events, "ok", ""
     except Exception as exc:
         imap_error = str(exc)
+
+    # POP3 has no XOAUTH2 support in the stdlib, so the fallback only applies to Basic auth.
+    if access_token:
+        return [], [], "failed", imap_error or "imap returned no alerts/events"
 
     if bool(source.get("pop3_fallback_enabled", False)):
         try:
@@ -95,6 +106,7 @@ def _fetch_imap(
     *,
     username: str,
     password: str,
+    access_token: str = "",
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     host = compact_text(source.get("host"))
     port = positive_int(source.get("port"), 993)
@@ -105,7 +117,12 @@ def _fetch_imap(
     alerts: List[Dict[str, Any]] = []
     events: List[Dict[str, Any]] = []
     with imaplib.IMAP4_SSL(host, port) as client:
-        client.login(username, password)
+        if access_token:
+            # Outlook.com refuses Basic auth, so sign in with the OAuth2 SASL exchange.
+            payload = build_xoauth2_payload(username, access_token)
+            client.authenticate("XOAUTH2", lambda _challenge: payload)
+        else:
+            client.login(username, password)
         for folder in folders:
             status, _ = client.select(str(folder), readonly=True)
             if status != "OK":
@@ -268,7 +285,9 @@ def _extract_text_body(message: Message) -> str:
             texts.append(payload.decode(charset, errors="ignore"))
         except Exception:
             texts.append(payload.decode("utf-8", errors="ignore"))
-    body = compact_text(re.sub(r"<[^>]+>", " ", " ".join(texts)))
+    # strip_html drops <script>/<style> blocks wholesale; a bare tag strip would leave
+    # CSS declarations ("@media (max-width:600px){...}") inside the body text.
+    body = compact_text(strip_html(" ".join(texts)))
     return body[:3000]
 
 

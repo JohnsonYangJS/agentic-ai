@@ -47,8 +47,32 @@ fixed_sources:
 paused_sources:
   - id: github_security_advisories
     reason: 先暂停，避免安全公告把 AI 早报带成漏洞简报。
-  - id: executive_mailbox
-    reason: 私有提醒不进入公开早报。
+
+# 邮箱提醒：独立链路，产物为 runtime/executive_mailbox.json（紧急事务卡片）
+# 与 runtime/mail_event_queue.json（未来事项队列），不参与 Top10 排序。
+# Outlook.com 已关闭 IMAP Basic 认证（服务器声明 LOGINDISABLED），故走 OAuth2：
+# 首次需执行 `python scripts/microsoft_oauth_login.py` 完成浏览器授权，
+# 拿到 MS_OAUTH_REFRESH_TOKEN 后即可自动续期。
+assistant_mailbox:
+  enabled: true
+  id: executive_mailbox
+  source_name: 邮箱提醒
+  source_group: background
+  host: outlook.office365.com
+  port: 993
+  folders: [INBOX]
+  user_env: IMAP_USER
+  pass_env: IMAP_PASS
+  lookback_hours: 72
+  initial_backfill_hours: 168
+  max_messages: 50
+  max_items: 10
+  event_emit_window_days: 3
+  urgent_keywords: [会议, 开会, 截止, 到期, 面试, 审批, 提醒, deadline, meeting, interview]
+  important_keywords: [安排, 确认, 变更, 延期, 取消, agenda, schedule, reschedule]
+  vip_senders: []
+  ignored_senders: [noreply@github.com, no-reply@github.com]
+  ignored_subject_keywords: [github-notifications, verify your email, 验证码]
 
 tavily_search:
   enabled: true
